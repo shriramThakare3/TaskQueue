@@ -1,0 +1,55 @@
+# docker/Dockerfile.api
+# ─────────────────────────────────────────────────────────────────────────────
+# Multi-stage build for the FastAPI API service.
+# Stage 1 installs deps; Stage 2 is the lean runtime image.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Stage 1: dependency builder ───────────────────────────────────────────────
+FROM python:3.11-slim AS builder
+
+WORKDIR /build
+
+# System deps needed to compile psycopg2 & other C extensions
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gcc \
+        libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --prefix=/install --no-cache-dir -r requirements.txt
+
+
+# ── Stage 2: runtime ──────────────────────────────────────────────────────────
+FROM python:3.11-slim AS runtime
+
+LABEL maintainer="taskqueue"
+LABEL description="Task Queue API — FastAPI + Gunicorn"
+
+WORKDIR /app
+
+# Runtime lib for psycopg2
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libpq5 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy installed packages from builder
+COPY --from=builder /install /usr/local
+
+# Copy application source
+COPY api/     api/
+COPY db/      db/
+COPY core/    core/
+
+# Non-root user for security
+RUN useradd -m -u 1001 appuser && chown -R appuser /app
+USER appuser
+
+# Gunicorn with Uvicorn workers
+# Workers = (2 × CPU cores) + 1  — here we default to 4 for dev
+CMD ["gunicorn", "api.main:app", \
+     "--workers", "4", \
+     "--worker-class", "uvicorn.workers.UvicornWorker", \
+     "--bind", "0.0.0.0:8000", \
+     "--timeout", "120", \
+     "--access-logfile", "-", \
+     "--error-logfile", "-"]

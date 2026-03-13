@@ -1,0 +1,45 @@
+# docker/Dockerfile.worker
+# ─────────────────────────────────────────────────────────────────────────────
+# Image for the background worker process.
+# Shares the same base and dependencies as the API image.
+# ─────────────────────────────────────────────────────────────────────────────
+
+FROM python:3.11-slim AS builder
+
+WORKDIR /build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gcc \
+        libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --prefix=/install --no-cache-dir -r requirements.txt
+
+
+# ── Runtime ───────────────────────────────────────────────────────────────────
+FROM python:3.11-slim AS runtime
+
+LABEL description="Task Queue Worker"
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libpq5 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /install /usr/local
+
+# Worker needs db/, core/, worker/
+COPY worker/ worker/
+COPY db/     db/
+COPY core/   core/
+
+# Writable directory for file_write tasks
+RUN mkdir -p /tmp/taskqueue_files
+
+RUN useradd -m -u 1001 appuser && chown -R appuser /app /tmp/taskqueue_files
+USER appuser
+
+# The worker is a standalone Python module — no HTTP server needed
+CMD ["python", "-m", "worker.worker"]

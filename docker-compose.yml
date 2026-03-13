@@ -3,7 +3,6 @@
 # Orchestrates: db · api · worker · nginx
 # ─────────────────────────────────────────────────────────────────────────────
 
-version: "3.9"
 
 # ── Shared environment variables ──────────────────────────────────────────────
 x-db-env: &db-env
