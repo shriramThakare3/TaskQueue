@@ -1,0 +1,118 @@
+# docker-compose.yml
+# ─────────────────────────────────────────────────────────────────────────────
+# Orchestrates: db · api · worker · nginx
+# ─────────────────────────────────────────────────────────────────────────────
+
+version: "3.9"
+
+# ── Shared environment variables ──────────────────────────────────────────────
+x-db-env: &db-env
+  POSTGRES_USER:     ${POSTGRES_USER:-taskuser}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-taskpass}
+  POSTGRES_DB:       ${POSTGRES_DB:-taskqueue}
+  POSTGRES_HOST:     db
+  POSTGRES_PORT:     5432
+
+x-app-env: &app-env
+  <<: *db-env
+  LOG_LEVEL:              ${LOG_LEVEL:-INFO}
+  APP_ENV:                ${APP_ENV:-development}
+  WORKER_POLL_INTERVAL:   ${WORKER_POLL_INTERVAL:-2.0}
+  WORKER_MAX_RETRIES:     ${WORKER_MAX_RETRIES:-3}
+  WORKER_COUNT:           ${WORKER_COUNT:-2}
+
+
+services:
+
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: taskqueue_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER:     ${POSTGRES_USER:-taskuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-taskpass}
+      POSTGRES_DB:       ${POSTGRES_DB:-taskqueue}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"   # expose for local DB tooling (remove in prod)
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-taskuser} -d ${POSTGRES_DB:-taskqueue}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - taskqueue_net
+
+
+  # ── FastAPI / Gunicorn ──────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    container_name: taskqueue_api
+    restart: unless-stopped
+    environment:
+      <<: *app-env
+    depends_on:
+      db:
+        condition: service_healthy
+    # Do NOT expose 8000 to the host — traffic goes through Nginx only
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - taskqueue_net
+
+
+  # ── Background Worker ───────────────────────────────────────────────────────
+  worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+    container_name: taskqueue_worker
+    restart: unless-stopped
+    environment:
+      <<: *app-env
+    depends_on:
+      db:
+        condition: service_healthy
+    # Scale workers: docker compose up --scale worker=3
+    networks:
+      - taskqueue_net
+
+
+  # ── Nginx ───────────────────────────────────────────────────────────────────
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: taskqueue_nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost/ping || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - taskqueue_net
+
+
+# ── Volumes & Networks ────────────────────────────────────────────────────────
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  taskqueue_net:
+    driver: bridge
