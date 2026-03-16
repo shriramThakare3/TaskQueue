@@ -1,4 +1,4 @@
-# Task Queue System — Mini Celery Clone
+# Task Queue System
 
 A production-style asynchronous task queue built with FastAPI, PostgreSQL, and background workers — containerised with Docker Compose.
 
